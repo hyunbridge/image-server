@@ -1,0 +1,59 @@
+name: Deploy Image Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_TOKEN }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_NAME=${{ secrets.DOCKER_USERNAME }}/image-server:latest
+          docker build -t $IMAGE_NAME .
+          docker push $IMAGE_NAME
+
+      - name: Deploy to VM
+        uses: appleboy/ssh-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            # Login to Docker Hub
+            docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_TOKEN }}"
+            
+            # Pull the latest image
+            docker pull ${{ secrets.DOCKER_USERNAME }}/image-server:latest
+            
+            # Stop and remove the existing container if it exists
+            docker stop image-server || true
+            docker rm image-server || true
+            
+            # Create the cache and static directories if they don't exist
+            mkdir -p ~/image-server/cache
+            mkdir -p ~/image-server/static
+            
+            # Start the new container
+            docker run -d \
+              --name image-server \
+              -p 8000:8000 \
+              -v ~/image-server/cache:/app/cache \
+              -v ~/image-server/static:/app/static \
+              -e PORT=8000 \
+              -e STORAGE_LIMIT="${{ secrets.STORAGE_LIMIT || '524288000' }}" \
+              --restart=always \
+              ${{ secrets.DOCKER_USERNAME }}/image-server:latest
+            
+            # Clean up unused images
+            docker image prune -f
